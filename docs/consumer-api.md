@@ -29,30 +29,48 @@
 
 | 项 | 值 |
 |---|---|
-| Base URL | `http://127.0.0.1:8642` |
+| Base URL | `http://127.0.0.1:<API_PORT>`，`API_PORT` 默认 **8642** |
 | 鉴权 | 请求头 `X-API-Key` |
-| Key 存放 | 项目 `.env` 的 `API_KEY_LOCAL` 键 |
+| 配置文件 | `~/projects/pnl-api/.env`（项目根目录下） |
+| Key 键名 | `API_KEY_LOCAL` |
+| 端口键名 | `API_PORT`（可选，缺省 8642） |
 
-服务只绑定 `127.0.0.1`，仅本机可访问。
+服务只绑定 `127.0.0.1`，仅本机可访问。本文档其余示例为可读性直接写 `8642`。
 
 ```python
 from pathlib import Path
 import httpx
+
+PROJECT_ROOT = Path.home() / "projects/pnl-api"   # 项目若不在此处，改这一行
 
 def load_env(path: Path) -> dict[str, str]:
     values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if line and not line.lstrip().startswith("#") and "=" in line:
             k, _, v = line.partition("=")
-            values[k.strip()] = v.strip()
+            values[k.strip()] = v.strip().strip('"').strip("'")   # 容忍引号
     return values
 
-ENV = load_env(Path.home() / "projects/pnl-api/.env")
+ENV = load_env(PROJECT_ROOT / ".env")
 BASE_URL = f"http://127.0.0.1:{ENV.get('API_PORT', '8642')}"
 HEADERS = {"X-API-Key": ENV["API_KEY_LOCAL"]}
 ```
 
 **不要把 key 写进代码、日志或提交。**
+
+> **两个本机环境坑**：
+>
+> 1. **`.env` 的值不要加引号**。若写成 `API_KEY_LOCAL="xxx"`，引号会被当作 key 的
+>    一部分送进请求头，得到 401。上面的 `load_env` 已做容错，自己写解析时要注意。
+> 2. **系统级 HTTP 代理会拦截 127.0.0.1**。若本机配了全局代理（Shadowrocket 等），
+>    `urllib`/`requests` 会自动继承它，导致连不上本地服务。
+>    `httpx` 只读环境变量不读 macOS 系统配置，**不受影响**——这是推荐用 `httpx` 的原因。
+>    若必须用标准库：
+>
+>    ```python
+>    import urllib.request
+>    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 绕过代理
+>    ```
 
 ---
 
@@ -208,6 +226,13 @@ for q in r.json()["data"]:
 
 **同一代码可以传多笔**（分批建仓），系统会**逐笔返回**，不合并。
 
+> **顺序合同**：`data[]` 与你请求的 `positions[]` **一一对应、顺序保持不变**。
+> 即 `data[i]` 永远是 `positions[i]` 的结果，包括失败项也占位。
+> 同代码多笔时，靠下标区分是哪一笔（响应中没有独立的索引字段）。
+
+**请求头必须带 `Content-Type: application/json`**（httpx 的 `json=` 参数会自动带上；
+用标准库需自己设置，否则返回 400）。
+
 ```bash
 curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"positions":[{"code":"7203","shares":300,"cost_price":2800}]}' \
@@ -309,7 +334,17 @@ profit_rate  = profit / cost_total
 
 1. **只汇总成功的持仓**——上例中失败的 `00000` 那 100,000 成本**没有**计入
 2. 存在任何失败持仓时 `partial` 为 **`true`**
-3. `profit_rate` 在成功持仓总成本为 0 时返回 `null`
+3. **全部持仓都失败时**：`cost_total`、`market_value`、`profit` 均为 `0.0`，
+   `profit_rate` 为 **`null`**（没有成功项可算比率），`partial` 为 `true`。
+   实测形状：
+
+   ```json
+   {"cost_total": 0.0, "market_value": 0.0, "profit": 0.0,
+    "profit_rate": null, "partial": true}
+   ```
+
+   > 消费方务必区分「合计为 0」与「无数据」：判据是 `profit_rate === null`
+   > 且 `data[]` 中没有 `error === null` 的项。不要把 `profit: 0.0` 当成"不赚不亏"。
 
 > `partial: true` 意味着你看到的合计**不是全部持仓**。发布前请自行决定：
 > 是补齐失败项后再发，还是明确标注"部分持仓数据缺失"。
@@ -337,7 +372,9 @@ profit_rate  = profit / cost_total
 | **401** | `UNAUTHORIZED` | 缺少或错误的 `X-API-Key` | 检查 `.env` 的 `API_KEY_LOCAL`。**不要重试** |
 | **400** | `INVALID_REQUEST` | 请求体不合法：`cost_price` 与 `cost_total` 双给/双缺、类型错误、`positions` 为空或超 100 | 对照第 4.3 节参数表修正。**不要重试** |
 | **400** | `TOO_MANY_CODES` | `codes` 超过 100 个 | 分批调用 |
-| **500** | `INTERNAL_ERROR` | 服务内部错误 | 记下时刻与请求内容，查服务日志 |
+| **500** | `INTERNAL_ERROR` | 服务内部错误 | 记下**发生时刻（JST）与完整请求内容**，据此查服务日志。注意错误响应**不含 `request_id`**，只能靠时刻对齐日志 |
+
+服务日志位置：`~/Library/Logs/pnlapi.out.log` 与 `pnlapi.err.log`（日志已做密钥脱敏）。
 
 真实的 401：
 
@@ -365,14 +402,29 @@ profit_rate  = profit / cost_total
 
 ### 5.2 持仓级错误（HTTP 200，单项失败不影响其他）
 
-出现在 `data[].error` 里，其余字段为 `null`。
+出现在 `data[].error` 里，其余业务字段为 `null`。
 
 | `code` | 含义 | 处置 |
 |---|---|---|
 | `UNKNOWN_CODE` | 代码不在上市证券主数据中 | 确认代码；已退市证券也会命中 |
 | `NO_RECENT_PRICE` | 代码存在但回看窗口（约 45 天）内无可用收盘价 | 通常是长期停牌。若 `hint` 写「主数据不可用，代码有效性未验证」，则代码是否存在**未经确认**，稍后重试 |
-| `INVALID_SHARES` | `shares` 不是正整数 | 传当前持有股数，整数且 > 0 |
-| `INVALID_COST` | 成本参数不合法（非正数等） | 成本必须为正数 |
+| `INVALID_SHARES` | `shares` 是整数但不是正数（如 `0`、`-5`） | 传当前持有股数，整数且 > 0 |
+| `INVALID_COST` | 成本是数值但非正数（如 `0`、`-100`） | 成本必须为正数 |
+
+### 5.3 400 与 200 的切分线
+
+**类型不对 → 400（整体拒绝）；类型对但值非法 → 200（单项错误）。**
+
+| 你传的 | 结果 |
+|---|---|
+| `"shares": "abc"` | **400** `INVALID_REQUEST`——不是整数，请求体不合法 |
+| `"shares": -5` | **200**，该项 `INVALID_SHARES`，其余持仓照常计算 |
+| `"shares": 3.5` | **400**——不是整数 |
+| `"cost_price": "x"` | **400**——不是数值 |
+| `"cost_price": -100` | **200**，该项 `INVALID_COST` |
+| 双给或双缺成本字段 | **400**——请求体结构不合法 |
+
+判断依据：**请求体能不能被解析成合法结构**。不能 → 400；能解析但业务上不成立 → 200 单项错误。
 
 ---
 
@@ -380,27 +432,36 @@ profit_rate  = profit / cost_total
 
 **服务不会替你判断数据是不是"今天的"。你必须自己核对 `as_of`。**
 
+### 6.1 先分清三种情况
+
+`as_of` 不等于今天，**未必是问题**。先判断今天是不是交易日：
+
 ```text
-调用 /v1/pnl 或 /v1/quotes
-  → 检查响应中每一项的 as_of
-  → as_of == 今天(JST) ?
-      是 → 这是当日盈亏，可以发布
-      否 → 这不是今日数据
-           → 若现在还早于 16:30 JST：等待后重试
-           → 若已过 16:30 JST 且仍是旧日期：见下方「重要限制」
+as_of == 今天(JST) ?
+  是 → 当日数据，可作为"今日盈亏"发布
+  否 ↓
+     今天是交易日吗？（周末、日本节假日都不是）
+       不是 → 正常。as_of 就是最近一个交易日。
+              可以发布，但必须标注"截至 <as_of> 收盘"，
+              不得称为"今日盈亏"
+       是   ↓
+            现在过了 16:30 JST 吗？
+              没过 → 当日收盘价尚未发布，等待后重试
+              过了 → 见 6.3「缓存限制」，多半是缓存钉住了
 ```
 
 **禁止把旧 `as_of` 的数字当作"今日盈亏"发布。**
 
-参考实现：
+### 6.2 参考实现
 
 ```python
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 JST = timezone(timedelta(hours=9))
+PUBLISH_TIME = time(16, 30)          # 当日收盘价约此时发布
 
-def today_jst() -> str:
-    return datetime.now(JST).date().isoformat()
+def now_jst() -> datetime:
+    return datetime.now(JST)
 
 def fetch_pnl(positions: list[dict]) -> dict:
     r = httpx.post(f"{BASE_URL}/v1/pnl", headers=HEADERS, timeout=60,
@@ -408,29 +469,80 @@ def fetch_pnl(positions: list[dict]) -> dict:
     r.raise_for_status()
     return r.json()
 
-def is_today_data(body: dict) -> bool:
-    """全部成功持仓的 as_of 都是今天，才算当日数据。"""
+def check_freshness(body: dict) -> tuple[str, str]:
+    """返回 (状态, 说明)。状态取值：TODAY / STALE_OK / WAIT / STUCK / NO_DATA
+
+    注意：本函数用「as_of 是否为今天」判断，而不是自己算交易日历——
+    本服务不提供交易日历端点，最近交易日以 as_of 为准。
+    """
     ok_rows = [row for row in body["data"] if row["error"] is None]
-    return bool(ok_rows) and all(row["as_of"] == today_jst() for row in ok_rows)
+    if not ok_rows:
+        return "NO_DATA", "没有任何成功持仓"
+
+    as_of_set = {row["as_of"] for row in ok_rows}
+    as_of = max(as_of_set)
+    now = now_jst()
+    today = now.date().isoformat()
+
+    if as_of == today:
+        return "TODAY", f"当日数据（{as_of}）"
+
+    # as_of 不是今天。周末与节假日属正常——今天没开市。
+    if now.weekday() >= 5:
+        return "STALE_OK", f"今天是周末，最近交易日为 {as_of}"
+    if now.time() < PUBLISH_TIME:
+        return "WAIT", f"当日收盘价尚未发布（现在 {now:%H:%M} JST），最近为 {as_of}"
+    # 工作日且已过发布时刻却仍是旧日期：可能是节假日，也可能是缓存钉住
+    return "STUCK", (
+        f"工作日 {now:%H:%M} JST 仍返回 {as_of}。"
+        "若今天是日本节假日属正常；否则见 6.3 缓存限制"
+    )
 
 body = fetch_pnl(my_positions)
-if not is_today_data(body):
-    raise SystemExit("不是当日数据，放弃本次发布")
+status, detail = check_freshness(body)
+
+if status == "TODAY":
+    publish(body, label="今日盈亏")
+elif status == "STALE_OK":
+    publish(body, label=f"截至 {max(r['as_of'] for r in body['data'] if r['error'] is None)} 收盘")
+elif status == "WAIT":
+    print(f"[wait] {detail}")          # 稍后重试
+else:
+    print(f"[alert] {status}: {detail}")   # 需要人工介入，不要发布
+
 if body["totals"]["partial"]:
     print("[warn] 部分持仓失败，合计不完整")
 ```
 
-### ⚠️ 重要限制：当日首次请求请放在 16:30 JST 之后
+> **周末不会让脚本中止**——`STALE_OK` 是可发布状态，只是必须改标注。
+> 这一点与第 1 节的表格一致。
+
+### 6.3 ⚠️ 缓存限制：当日首次请求请放在 16:30 JST 之后
 
 服务对每个代码的行情做了**当日缓存**（同一代码当天只向上游取一次，
 缓存在 JST 日期翻转时失效）。
 
-**这意味着**：如果你在当天 16:30 JST **之前**请求过某个代码，
-那么该代码当天将**持续返回旧的 `as_of`**，即使 16:30 之后收盘价已经发布。
+**后果**：如果你在当天 16:30 JST **之前**请求过某个代码，
+该代码当天将**持续返回旧的 `as_of`**，即使 16:30 之后收盘价已经发布。
+此时**重试没有用**——这就是上面 `STUCK` 状态的成因。
 
-**规避方法**：当日对任一代码的**首次**请求放在 **16:30 JST 之后**。
+**这是已知的既定行为，不是故障**（设计取舍见项目 `docs/decisions.md`）。
 
-这是已知的既定行为，不是故障。
+**规避方法（按优先级）**：
+
+1. **首选**：当日对任一代码的**首次**请求放在 **16:30 JST 之后**。
+   把你的定时任务设在 17:00 JST 以后即可完全避开。
+2. **已经踩到了**（工作日、已过 16:30、仍返回旧 `as_of`）：
+   服务**没有**提供刷新参数或清缓存端点。唯一手段是**重启服务**，
+   缓存随进程消失：
+
+   ```bash
+   launchctl kickstart -k gui/$(id -u)/com.jack.pnlapi
+   ```
+
+   `-k` 表示先杀后拉；服务由 launchd 常驻托管，会自动重启（约 5 秒）。
+   重启后首次请求即取到最新数据。**这需要本机 shell 权限**，
+   若你的消费脚本无权执行，请联系运维。
 
 ---
 
