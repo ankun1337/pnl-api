@@ -1,0 +1,13 @@
+# 密钥永不入库
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# 工具产物
+.DS_Store
+.gstack/

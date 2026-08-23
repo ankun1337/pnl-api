@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  pnl-api 常驻服务（KeepAlive：崩溃自动拉起，RunAtLoad：登录/重启即启动）。
+
+  安装与启用（验收第 4 项时执行）：
+    cp launchd/com.jack.pnlapi.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jack.pnlapi.plist
+  注意：本 plist 未设 Disabled，bootstrap 即生效。
+
+  launchd 默认 PATH 不含 ~/.local/bin，必须显式给出，否则找不到 uv。
+  服务本身无定时语义（常驻），不涉及时区换算。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jack.pnlapi</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/admin/.local/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>pnlapi.api</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/admin/projects/pnl-api</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/admin/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/admin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/admin/Library/Logs/pnlapi.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/admin/Library/Logs/pnlapi.err.log</string>
+</dict>
+</plist>
