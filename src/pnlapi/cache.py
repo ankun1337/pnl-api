@@ -1,50 +1,82 @@
 """进程内缓存：code -> 已解析行情。
 
-失效规则：**JST 日期翻转即失效**（提示词第 5 节原文；2026-08-23 Jack 拍板
-严格按原文执行，见 docs/decisions.md）。
+失效规则（2026-08-23 检查点 2 批复修正，根因是提示词第 5 节的规格缺陷）：
 
-已向 Jack 报告并由其接受的已知行为：若某代码在当日收盘价发布（约 16:30 JST）
-**之前**被请求过，缓存会将旧 as_of 钉到当日 JST 午夜——当天 16:30 后也拿不到
-新价。规避方法写入 consumer-api.md：当日首次请求放在 16:30 JST 之后。
+- 条目的 **as_of == 今天(JST)** → 缓存至 JST 日切。EOD 数据当天不再变，
+  钉住是正确的，也挡掉了当日的重复轮询。
+- 条目的 **as_of < 今天(JST)** → 只缓存 `CACHE_STALE_TTL_S` 秒（默认 600）。
+
+**为什么必须区分**：原规格「日期翻转即失效」会让当日 16:30 JST 之前的一次
+请求把旧 as_of 钉到午夜——当天收盘价发布后也取不到新价，消费方的
+「等待-重试」就绪协议永久失效。给旧数据加 TTL 后，发布前的轮询仍被挡掉
+绝大部分，发布后 10 分钟内自然取到新价，协议恢复可用。
 """
 
 from __future__ import annotations
 
 import threading
+import time
+from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 from pnlapi.clock import today_jst
 
 
-class DayCache:
-    """线程安全。条目仅在写入当天（JST）有效，日期翻转后视为不存在。"""
+@dataclass(frozen=True)
+class _Entry:
+    value: Any
+    stored_day: date      # 写入时的 JST 日期
+    as_of: date | None    # 该条目所承载数据的业务日期；None 表示不适用
+    stored_at: float      # 单调时钟，用于 TTL
 
-    def __init__(self) -> None:
+
+class DayCache:
+    """线程安全。两档失效策略见模块 docstring。
+
+    `as_of=None`（如主数据）视同"当日数据"，缓存至日切——主数据没有
+    "尚未发布"的概念，不需要 TTL。
+    """
+
+    def __init__(self, stale_ttl_s: float = 600.0,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
         self._lock = threading.Lock()
-        self._data: dict[str, tuple[date, Any]] = {}
+        self._data: dict[str, _Entry] = {}
+        self._stale_ttl_s = stale_ttl_s
+        self._monotonic = monotonic
+
+    def _is_live(self, entry: _Entry, today: date, now: float) -> bool:
+        if entry.stored_day != today:
+            return False                      # 跨日一律失效
+        if entry.as_of is not None and entry.as_of < today:
+            return now - entry.stored_at < self._stale_ttl_s   # 旧数据：TTL
+        return True                           # 当日数据：钉到日切
 
     def get(self, key: str) -> Any | None:
-        today = today_jst()
+        today, now = today_jst(), self._monotonic()
         with self._lock:
             entry = self._data.get(key)
             if entry is None:
                 return None
-            stored_day, value = entry
-            if stored_day != today:
+            if not self._is_live(entry, today, now):
                 del self._data[key]
                 return None
-            return value
+            return entry.value
 
-    def put(self, key: str, value: Any) -> None:
+    def put(self, key: str, value: Any, *, as_of: date | None = None) -> None:
         with self._lock:
-            self._data[key] = (today_jst(), value)
+            self._data[key] = _Entry(
+                value=value,
+                stored_day=today_jst(),
+                as_of=as_of,
+                stored_at=self._monotonic(),
+            )
 
     def clear(self) -> None:
         with self._lock:
             self._data.clear()
 
     def __len__(self) -> int:
-        today = today_jst()
+        today, now = today_jst(), self._monotonic()
         with self._lock:
-            return sum(1 for day, _ in self._data.values() if day == today)
+            return sum(1 for e in self._data.values() if self._is_live(e, today, now))

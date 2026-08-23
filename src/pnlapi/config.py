@@ -38,6 +38,9 @@ class Settings(BaseModel):
     api_key_local: SecretStr = Field(min_length=1)
     lookback_days: int = Field(default=45, ge=7, le=120)
     timeout_s: float = Field(default=10, gt=0)
+    # 旧数据（as_of < 今天）的缓存存活秒数。当日数据不受此限，钉到 JST 日切。
+    # 检查点 2 批复新增：修正原规格「日期翻转即失效」导致的就绪协议失效。
+    cache_stale_ttl_s: float = Field(default=600, ge=0)
 
     @field_validator("api_bind")
     @classmethod
@@ -71,6 +74,7 @@ def get_settings() -> Settings:
         api_key_local=raw["API_KEY_LOCAL"],
         lookback_days=int(raw.get("LOOKBACK_DAYS", "45")),
         timeout_s=float(raw.get("TIMEOUT_S", "10")),
+        cache_stale_ttl_s=float(raw.get("CACHE_STALE_TTL_S", "600")),
     )
 
 

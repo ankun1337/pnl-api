@@ -73,7 +73,7 @@ def test_settings_defaults():
 
 def test_cache_hit_same_day():
     c = cache_module.DayCache()
-    c.put("7203", {"close": 3132})
+    c.put("7203", {"close": 3132}, as_of=today_jst())
     assert c.get("7203") == {"close": 3132}
     assert len(c) == 1
     assert c.get("9432") is None
@@ -81,7 +81,7 @@ def test_cache_hit_same_day():
 
 def test_cache_expires_on_jst_date_rollover(monkeypatch):
     c = cache_module.DayCache()
-    c.put("7203", "old")
+    c.put("7203", "old", as_of=today_jst())
     # 模拟日期翻转
     tomorrow = today_jst() + timedelta(days=1)
     monkeypatch.setattr(cache_module, "today_jst", lambda: tomorrow)
@@ -94,6 +94,87 @@ def test_cache_clear():
     c.put("a", 1)
     c.clear()
     assert c.get("a") is None
+
+
+# --- 两档失效策略（检查点 2 批复第 1 条）----------------------------------
+
+
+class FakeClock:
+    """可控单调时钟，精确验证 TTL 边界。"""
+
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, seconds: float) -> None:
+        self.t += seconds
+
+
+def test_stale_entry_expires_after_ttl():
+    """旧数据（as_of < 今天）到 TTL 后必须重新取价。
+
+    这是就绪协议能工作的前提：收盘价发布后，消费方重试能拿到新价。
+    """
+    clock = FakeClock()
+    c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
+    yesterday = today_jst() - timedelta(days=1)
+
+    c.put("7203", "昨日行情", as_of=yesterday)
+    assert c.get("7203") == "昨日行情"          # 刚写入，命中
+
+    clock.advance(599)
+    assert c.get("7203") == "昨日行情"          # TTL 内，仍命中（挡掉重复轮询）
+
+    clock.advance(2)                            # 累计 601 秒
+    assert c.get("7203") is None                # 过期，将重新取价
+    assert len(c) == 0
+
+
+def test_today_entry_pinned_until_date_rollover():
+    """当日数据钉到 JST 日切，TTL 对它无效——EOD 当天不再变。"""
+    clock = FakeClock()
+    c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
+
+    c.put("7203", "当日行情", as_of=today_jst())
+    clock.advance(10_000)                       # 远超 TTL
+    assert c.get("7203") == "当日行情"          # 仍钉住
+
+    clock.advance(50_000)
+    assert c.get("7203") == "当日行情"
+
+
+def test_stale_then_refreshed_to_today_becomes_pinned():
+    """旧数据过期→重取到当日数据后，转为钉住模式（完整就绪流程）。"""
+    clock = FakeClock()
+    c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
+    yesterday = today_jst() - timedelta(days=1)
+
+    c.put("7203", "发布前", as_of=yesterday)
+    clock.advance(601)
+    assert c.get("7203") is None                # 过期，触发重取
+
+    c.put("7203", "发布后", as_of=today_jst())  # 取到当日数据
+    clock.advance(10_000)
+    assert c.get("7203") == "发布后"            # 此后钉住，不再重复请求
+
+
+def test_as_of_none_treated_as_pinned():
+    """主数据无 as_of 概念，按当日数据处理（钉到日切）。"""
+    clock = FakeClock()
+    c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
+    c.put("master", {"7203": "トヨタ"})
+    clock.advance(10_000)
+    assert c.get("master") == {"7203": "トヨタ"}
+
+
+def test_ttl_zero_means_stale_never_cached():
+    """CACHE_STALE_TTL_S=0 时旧数据不缓存（每次都重取）。"""
+    clock = FakeClock()
+    c = cache_module.DayCache(stale_ttl_s=0, monotonic=clock)
+    c.put("7203", "旧", as_of=today_jst() - timedelta(days=1))
+    assert c.get("7203") is None
 
 
 # --- logsafe（T7 的核心断言）-----------------------------------------------

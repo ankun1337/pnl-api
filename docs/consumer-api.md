@@ -442,15 +442,18 @@ as_of == 今天(JST) ?
   否 ↓
      今天是交易日吗？（周末、日本节假日都不是）
        不是 → 正常。as_of 就是最近一个交易日。
-              可以发布，但必须标注"截至 <as_of> 收盘"，
+              可以发布，但【必须】标注"截至 <as_of> 收盘"，
               不得称为"今日盈亏"
-       是   ↓
-            现在过了 16:30 JST 吗？
-              没过 → 当日收盘价尚未发布，等待后重试
-              过了 → 见 6.3「缓存限制」，多半是缓存钉住了
+       是   → 当日收盘价尚未发布（约 16:30 JST 后才有）
+              等待 10 分钟后重试，直至 as_of == 今天
 ```
 
-**禁止把旧 `as_of` 的数字当作"今日盈亏"发布。**
+**两条硬性要求**：
+
+1. **禁止把旧 `as_of` 的数字当作"今日盈亏"发布。**
+2. **发布非当日数据时，`as_of` 标注是强制项**——正文里必须出现
+   "截至 YYYY-MM-DD 收盘"字样，不得省略、不得只写在角落。
+   读者必须一眼看到这不是今天的数字。
 
 ### 6.2 参考实现
 
@@ -469,80 +472,63 @@ def fetch_pnl(positions: list[dict]) -> dict:
     r.raise_for_status()
     return r.json()
 
-def check_freshness(body: dict) -> tuple[str, str]:
-    """返回 (状态, 说明)。状态取值：TODAY / STALE_OK / WAIT / STUCK / NO_DATA
+def check_freshness(body: dict) -> tuple[str, str, str | None]:
+    """返回 (状态, 说明, as_of)。状态：TODAY / STALE_OK / WAIT / NO_DATA
 
-    注意：本函数用「as_of 是否为今天」判断，而不是自己算交易日历——
+    本函数用「as_of 是否为今天」判断，不自己算交易日历——
     本服务不提供交易日历端点，最近交易日以 as_of 为准。
     """
     ok_rows = [row for row in body["data"] if row["error"] is None]
     if not ok_rows:
-        return "NO_DATA", "没有任何成功持仓"
+        return "NO_DATA", "没有任何成功持仓", None
 
-    as_of_set = {row["as_of"] for row in ok_rows}
-    as_of = max(as_of_set)
+    as_of = max(row["as_of"] for row in ok_rows)
     now = now_jst()
     today = now.date().isoformat()
 
     if as_of == today:
-        return "TODAY", f"当日数据（{as_of}）"
-
-    # as_of 不是今天。周末与节假日属正常——今天没开市。
+        return "TODAY", f"当日数据（{as_of}）", as_of
     if now.weekday() >= 5:
-        return "STALE_OK", f"今天是周末，最近交易日为 {as_of}"
+        return "STALE_OK", f"今天是周末，最近交易日为 {as_of}", as_of
     if now.time() < PUBLISH_TIME:
-        return "WAIT", f"当日收盘价尚未发布（现在 {now:%H:%M} JST），最近为 {as_of}"
-    # 工作日且已过发布时刻却仍是旧日期：可能是节假日，也可能是缓存钉住
-    return "STUCK", (
-        f"工作日 {now:%H:%M} JST 仍返回 {as_of}。"
-        "若今天是日本节假日属正常；否则见 6.3 缓存限制"
-    )
+        return "WAIT", f"当日收盘价尚未发布（现在 {now:%H:%M} JST）", as_of
+    # 工作日、已过发布时刻仍是旧日期 → 今天多半是日本节假日
+    return "STALE_OK", f"今天可能是节假日，最近交易日为 {as_of}", as_of
+
 
 body = fetch_pnl(my_positions)
-status, detail = check_freshness(body)
+status, detail, as_of = check_freshness(body)
 
 if status == "TODAY":
     publish(body, label="今日盈亏")
 elif status == "STALE_OK":
-    publish(body, label=f"截至 {max(r['as_of'] for r in body['data'] if r['error'] is None)} 收盘")
+    # as_of 标注是强制项，不得省略
+    publish(body, label=f"截至 {as_of} 收盘")
 elif status == "WAIT":
-    print(f"[wait] {detail}")          # 稍后重试
+    print(f"[wait] {detail}")           # 10 分钟后重试
 else:
-    print(f"[alert] {status}: {detail}")   # 需要人工介入，不要发布
+    print(f"[skip] {detail}")           # 无数据可发
 
 if body["totals"]["partial"]:
     print("[warn] 部分持仓失败，合计不完整")
 ```
 
-> **周末不会让脚本中止**——`STALE_OK` 是可发布状态，只是必须改标注。
-> 这一点与第 1 节的表格一致。
+> **周末与节假日不会让脚本中止**——`STALE_OK` 是可发布状态，
+> 只是**必须**带 `as_of` 标注。这与第 1 节的表格一致。
 
-### 6.3 ⚠️ 缓存限制：当日首次请求请放在 16:30 JST 之后
+### 6.3 缓存行为（对你透明，无需干预）
 
-服务对每个代码的行情做了**当日缓存**（同一代码当天只向上游取一次，
-缓存在 JST 日期翻转时失效）。
+服务对行情做了两档缓存，**你不需要为它做任何事**：
 
-**后果**：如果你在当天 16:30 JST **之前**请求过某个代码，
-该代码当天将**持续返回旧的 `as_of`**，即使 16:30 之后收盘价已经发布。
-此时**重试没有用**——这就是上面 `STUCK` 状态的成因。
+| 条目状态 | 缓存策略 | 对你的意义 |
+|---|---|---|
+| `as_of` **是今天** | 钉到 JST 日切 | EOD 数据当天不再变，重复调用不浪费上游配额 |
+| `as_of` **早于今天** | 最多 **600 秒** | 收盘价发布后，你的下一次重试**最迟 10 分钟内**就能拿到新价 |
 
-**这是已知的既定行为，不是故障**（设计取舍见项目 `docs/decisions.md`）。
+所以 **6.1 的「等待后重试」是有效的**：即使你在 16:30 JST 之前调用过，
+之后的重试仍会取到当日数据，无需任何特殊操作。
 
-**规避方法（按优先级）**：
-
-1. **首选**：当日对任一代码的**首次**请求放在 **16:30 JST 之后**。
-   把你的定时任务设在 17:00 JST 以后即可完全避开。
-2. **已经踩到了**（工作日、已过 16:30、仍返回旧 `as_of`）：
-   服务**没有**提供刷新参数或清缓存端点。唯一手段是**重启服务**，
-   缓存随进程消失：
-
-   ```bash
-   launchctl kickstart -k gui/$(id -u)/com.jack.pnlapi
-   ```
-
-   `-k` 表示先杀后拉；服务由 launchd 常驻托管，会自动重启（约 5 秒）。
-   重启后首次请求即取到最新数据。**这需要本机 shell 权限**，
-   若你的消费脚本无权执行，请联系运维。
+> 建议轮询间隔 **≥ 10 分钟**，与旧数据缓存周期对齐；更密集的轮询不会更快拿到数据。
 
 ---
 

@@ -82,8 +82,10 @@ class JQuantsClient:
         self._client = httpx.Client(
             base_url=BASE_URL, timeout=self._timeout, transport=transport
         )
-        self._bars_cache = DayCache()   # code → list[Bar]
-        self._master_cache = DayCache() # 单键 "master" → (name_map, code_set)
+        # 行情缓存两档失效：当日数据钉到日切，旧数据 TTL（检查点 2 批复）
+        self._bars_cache = DayCache(stale_ttl_s=settings.cache_stale_ttl_s)
+        # 主数据无「尚未发布」概念，恒按当日数据处理（as_of=None）
+        self._master_cache = DayCache()
 
     def close(self) -> None:
         self._client.close()
@@ -204,7 +206,10 @@ class JQuantsClient:
         bars = sorted(
             (parse_bar(r) for r in rows), key=lambda b: b.trade_date
         )
-        self._bars_cache.put(vendor_code, bars)
+        # as_of = 该批数据的最新交易日，决定缓存走哪一档：
+        # 已是当日数据 → 钉到日切；仍是旧数据 → TTL 后重取，让就绪协议可用
+        as_of = bars[-1].trade_date if bars else None
+        self._bars_cache.put(vendor_code, bars, as_of=as_of)
         return bars
 
     def reachable(self) -> bool:
