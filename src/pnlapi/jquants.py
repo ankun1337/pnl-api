@@ -22,6 +22,7 @@ from decimal import Decimal
 import httpx
 
 from pnlapi.cache import DayCache
+from pnlapi.calendar import CalendarService
 from pnlapi.clock import today_jst
 from pnlapi.config import get_settings
 from pnlapi.pnl import Bar
@@ -82,10 +83,11 @@ class JQuantsClient:
         self._client = httpx.Client(
             base_url=BASE_URL, timeout=self._timeout, transport=transport
         )
-        # 行情缓存两档失效：当日数据钉到日切，旧数据 TTL（检查点 2 批复）
+        # 行情缓存两档失效：当日数据钉到日切，旧数据与无数据走 TTL（检查点 2 批复）
         self._bars_cache = DayCache(stale_ttl_s=settings.cache_stale_ttl_s)
-        # 主数据无「尚未发布」概念，恒按当日数据处理（as_of=None）
+        # 主数据与日历无 as_of 语义，取到即钉到日切（put(pin=True)）
         self._master_cache = DayCache()
+        self.calendar = CalendarService(self._get_paged)
 
     def close(self) -> None:
         self._client.close()
@@ -161,7 +163,8 @@ class JQuantsClient:
             return {}, set()
         name_map = {r["Code"]: r.get("CoName") for r in rows}
         result = (name_map, set(name_map))
-        self._master_cache.put("master", result)
+        # 主数据无 as_of 语义，且已确实取到数据 → 显式钉到日切
+        self._master_cache.put("master", result, pin=True)
         logger.info("主数据已加载：%d 只证券", len(name_map))
         return result
 

@@ -160,13 +160,37 @@ def test_stale_then_refreshed_to_today_becomes_pinned():
     assert c.get("7203") == "发布后"            # 此后钉住，不再重复请求
 
 
-def test_as_of_none_treated_as_pinned():
-    """主数据无 as_of 概念，按当日数据处理（钉到日切）。"""
+def test_as_of_none_uses_ttl_not_pinned():
+    """as_of=None（没取到可用数据）走 TTL，**不得钉住**。
+
+    检查点 2 后续批复第 2 条：缺数据是可恢复状态，钉住会让它整天恢复不了。
+    """
     clock = FakeClock()
     c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
-    c.put("master", {"7203": "トヨタ"})
+
+    c.put("7203", [], as_of=None)               # 窗口内无 NORMAL 行
+    assert c.get("7203") == []                  # TTL 内命中，挡住重复轮询
+    clock.advance(601)
+    assert c.get("7203") is None                # 过期，可重新取价恢复
+
+
+def test_explicit_pin_survives_ttl():
+    """pin=True 显式钉到日切——供主数据这类确实取到了数据的条目使用。"""
+    clock = FakeClock()
+    c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
+    c.put("master", {"7203": "トヨタ"}, pin=True)
     clock.advance(10_000)
     assert c.get("master") == {"7203": "トヨタ"}
+
+
+def test_pinned_still_expires_on_rollover(monkeypatch):
+    """钉住也只钉到日切，不是永久。"""
+    clock = FakeClock()
+    c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
+    c.put("master", "v", pin=True)
+    monkeypatch.setattr(cache_module, "today_jst",
+                        lambda: today_jst() + timedelta(days=1))
+    assert c.get("master") is None
 
 
 def test_ttl_zero_means_stale_never_cached():

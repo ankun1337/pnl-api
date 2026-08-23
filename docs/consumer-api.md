@@ -93,12 +93,18 @@ HEADERS = {"X-API-Key": ENV["API_KEY_LOCAL"]}
 | `source` | 恒为 `JQUANTS_V2` |
 | `latency_class` | 恒为 `END_OF_DAY`。提醒你：这是日终数据，**不要在文案里称其为实时行情** |
 | `fees_included` | 恒为 `false`。**盈亏是毛值，不含手续费与税金** |
+| `today_jst` | 服务端当前的 JST 日期。**用它而不是你本地的日期**来判断 `as_of` 是否为"今天" |
+| `is_trading_day_today` | 今天是否为东证交易日。`true`/`false`/**`null`** |
+
+> **`is_trading_day_today` 为 `null` 表示"未知"，不表示"非交易日"**。
+> 出现 `null` 的原因是日历数据暂时不可用——此时退回按星期几粗判即可，
+> 盈亏计算完全不受影响。
 
 ---
 
 ## 4. 端点
 
-三个端点，都需要 `X-API-Key` 头。
+四个端点，都需要 `X-API-Key` 头。
 
 ### 4.1 `GET /v1/health`
 
@@ -351,6 +357,57 @@ profit_rate  = profit / cost_total
 
 ---
 
+### 4.4 `GET /v1/calendar` — 交易日历
+
+只读透传东证交易日历。用于判断某天是否开市。
+
+| 参数 | 类型 | 约束 |
+|---|---|---|
+| `from` | date | 必填，`YYYY-MM-DD` |
+| `to` | date | 必填，区间最长 400 天 |
+
+```bash
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://127.0.0.1:8642/v1/calendar?from=2026-08-21&to=2026-08-25"
+```
+
+真实响应：
+
+```json
+{
+  "meta": { "...": "见第 3 节" },
+  "data": [
+    {"date": "2026-08-21", "holiday_division": "1", "is_trading_day": true,  "not_covered": false},
+    {"date": "2026-08-22", "holiday_division": "0", "is_trading_day": false, "not_covered": false},
+    {"date": "2026-08-23", "holiday_division": "0", "is_trading_day": false, "not_covered": false},
+    {"date": "2026-08-24", "holiday_division": "1", "is_trading_day": true,  "not_covered": false},
+    {"date": "2026-08-25", "holiday_division": "1", "is_trading_day": true,  "not_covered": false}
+  ],
+  "coverage_from": "2026-07-24",
+  "coverage_to": "2026-10-07"
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `holiday_division` | 数据源 `HolDiv` 原值，**未加工透传**：`0`=非营业日 `1`=营业日 `2`=东证半日立会日 `3`=非营业日（仅大阪取引所祝日交易） |
+| `is_trading_day` | 派生值。`1`/`2` → `true`；`0`/`3` → `false`；**未知取值 → `null`** |
+| `not_covered` | `true` 表示该日期超出数据源覆盖范围。**服务不作猜测** |
+| `coverage_from/to` | 数据源实际覆盖的日期范围，通常是当前日期前后约两个月 |
+
+**三条注意**：
+
+1. **`is_trading_day: null` 表示未知**，不表示非交易日。见到 `null` 应视为"无法判断"。
+2. **`not_covered: true` 的日期没有任何信息**——不要把它当成非交易日。
+   查询范围请落在 `coverage_from` 与 `coverage_to` 之间。
+3. **`HolDiv=3` 映射为非交易日**：那天大阪取引所有衍生品交易，但**东证现货不开市**。
+   本服务只关心东证现货。
+
+日历不可用时，所有日期返回 `not_covered: true` 且 `coverage_*` 为 `null`，
+**HTTP 仍是 200**——这是降级，不是错误。
+
+---
+
 ## 5. 错误目录
 
 所有错误都是这个形状（**成功响应有 `meta`，错误响应只有 `error`**）：
@@ -436,16 +493,18 @@ profit_rate  = profit / cost_total
 
 `as_of` 不等于今天，**未必是问题**。先判断今天是不是交易日：
 
+**服务已经在 `meta` 里告诉你今天是不是交易日**（`is_trading_day_today`），
+不需要你自己算日历。
+
 ```text
-as_of == 今天(JST) ?
+as_of == meta.today_jst ?
   是 → 当日数据，可作为"今日盈亏"发布
   否 ↓
-     今天是交易日吗？（周末、日本节假日都不是）
-       不是 → 正常。as_of 就是最近一个交易日。
-              可以发布，但【必须】标注"截至 <as_of> 收盘"，
-              不得称为"今日盈亏"
-       是   → 当日收盘价尚未发布（约 16:30 JST 后才有）
-              等待 10 分钟后重试，直至 as_of == 今天
+     meta.is_trading_day_today == false ?
+       是 → 今天不开市（周末或节假日）。as_of 就是最近一个交易日。
+            可以发布，但【必须】标注"截至 <as_of> 收盘"
+       否 → 今天开市（或日历不可用），当日收盘价尚未发布
+            等待 10 分钟后重试，直至 as_of == today_jst
 ```
 
 **两条硬性要求**：
@@ -483,17 +542,27 @@ def check_freshness(body: dict) -> tuple[str, str, str | None]:
         return "NO_DATA", "没有任何成功持仓", None
 
     as_of = max(row["as_of"] for row in ok_rows)
+    meta = body["meta"]
+    today = meta["today_jst"]                    # 用服务端 JST 日期，不用本地
+    is_trading = meta["is_trading_day_today"]    # true / false / null
     now = now_jst()
-    today = now.date().isoformat()
 
     if as_of == today:
         return "TODAY", f"当日数据（{as_of}）", as_of
-    if now.weekday() >= 5:
-        return "STALE_OK", f"今天是周末，最近交易日为 {as_of}", as_of
+
+    # 服务端日历已明确今天不开市 —— 无需猜测
+    if is_trading is False:
+        return "STALE_OK", f"今天非交易日，最近交易日为 {as_of}", as_of
+
+    # 今天是交易日（或日历不可用），看是否已过发布时刻
     if now.time() < PUBLISH_TIME:
         return "WAIT", f"当日收盘价尚未发布（现在 {now:%H:%M} JST）", as_of
-    # 工作日、已过发布时刻仍是旧日期 → 今天多半是日本节假日
-    return "STALE_OK", f"今天可能是节假日，最近交易日为 {as_of}", as_of
+
+    if is_trading is None and now.weekday() >= 5:
+        # 日历不可用时的兜底：按星期几粗判
+        return "STALE_OK", f"今天是周末（日历不可用，粗判），最近交易日为 {as_of}", as_of
+
+    return "WAIT", f"已过发布时刻但仍是 {as_of}，10 分钟后重试", as_of
 
 
 body = fetch_pnl(my_positions)
@@ -556,7 +625,70 @@ if body["totals"]["partial"]:
 
 ---
 
-## 8. 限制速查
+## 8. 延迟与超时（实测数据）
+
+服务向上游串行取数并遵守限流，**请求耗时与持仓只数线性相关**。
+下面是本机实测值（2026-08-23，Light 档）：
+
+| 场景 | 实测耗时 | 构成 |
+|---|---|---|
+| 冷启动，单只 | **4,903 ms** | 一次性主数据（4,444 只证券）+ 一次性日历 + 1 次行情 |
+| 热路径，单只（缓存命中） | **24 ms** | 无上游请求 |
+| 已热，新增 1 只冷代码 | **1,317 ms** | 1 次行情请求（限流最小间隔 1.25 s 主导） |
+
+### 什么时候是"冷"的
+
+服务重启后的**第一次请求**要额外拉取主数据与交易日历（各约 1.5–2 s），
+这两项拉一次就钉到 JST 日切，当天不再重复。
+
+行情按代码分别缓存：`as_of` 已是当日 → 钉到日切；否则 600 秒 TTL。
+
+### 预计耗时公式
+
+设 `N` = 本次请求中**未命中缓存**的代码数：
+
+```
+耗时 ≈ 冷启动开销 + N × 1.3 秒
+
+冷启动开销 = 3.5 秒（服务重启后首次请求）或 0（当天已请求过）
+```
+
+举例（服务已热）：
+
+| 未命中代码数 | 预计耗时 |
+|---|---|
+| 5 | 约 7 秒 |
+| 20 | 约 26 秒 |
+| 50 | 约 65 秒 |
+| 100（上限） | 约 130 秒 |
+
+### 建议客户端超时值
+
+```python
+# 按最坏情况给足余量：冷启动 + 全部代码未命中
+timeout = 10 + len(positions) * 2      # 秒
+
+r = httpx.post(f"{BASE_URL}/v1/pnl", headers=HEADERS,
+               json={"positions": positions}, timeout=timeout)
+```
+
+| 持仓数 | 建议 timeout |
+|---|---|
+| ≤ 5 | **30 s** |
+| ≤ 20 | **60 s** |
+| ≤ 50 | **120 s** |
+| ≤ 100 | **240 s** |
+
+> **不要用默认超时**：httpx 默认 5 秒，连冷启动的单只请求都不够。
+>
+> **不要靠缩短超时来"快速失败"**：中途超时会浪费已经花掉的上游配额，
+> 而重试又要从头开始。宁可给足时间。
+>
+> **同一天的第二次调用会快得多**——当日数据钉到日切，热路径只要几十毫秒。
+
+---
+
+## 9. 限制速查
 
 | 项 | 值 |
 |---|---|

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import secrets
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 from pnlapi import pnl
-from pnlapi.clock import now_jst
+from pnlapi.clock import now_jst, today_jst
 from pnlapi.config import get_settings
 from pnlapi.jquants import JQuantsClient
 from pnlapi.logsafe import setup_logging
@@ -44,6 +44,14 @@ class Meta(BaseModel):
     )
     fees_included: Literal[False] = Field(
         default=False, description="盈亏为毛值，不含手续费与税金"
+    )
+    today_jst: date | None = Field(
+        default=None, description="服务端当前的 JST 日期"
+    )
+    is_trading_day_today: bool | None = Field(
+        default=None,
+        description="今天(JST)是否为东证交易日。**日历不可用或取值未知时为 null**——"
+        "null 表示未知，不表示非交易日",
     )
 
 
@@ -109,6 +117,28 @@ class HealthResponse(BaseModel):
     data: HealthData
 
 
+class CalendarDay(BaseModel):
+    date: date
+    holiday_division: str | None = Field(
+        description="数据源的 HolDiv 原值，透传未加工。"
+        "0=非营业日 1=营业日 2=东证半日立会日 3=非营业日(OSE祝日交易)。"
+        "not_covered 时为 null"
+    )
+    is_trading_day: bool | None = Field(
+        description="派生值。**null 表示未知**（未覆盖或 HolDiv 取值未知），不表示非交易日"
+    )
+    not_covered: bool = Field(
+        description="true 表示该日期超出数据源覆盖范围，服务不作猜测"
+    )
+
+
+class CalendarResponse(BaseModel):
+    meta: Meta
+    data: list[CalendarDay]
+    coverage_from: date | None = Field(description="数据源实际覆盖的最早日期")
+    coverage_to: date | None = Field(description="数据源实际覆盖的最晚日期")
+
+
 # --- 请求模型（结构性错误在此拦截 → 整体 400，见 decisions.md 错误层级）---
 
 
@@ -165,8 +195,20 @@ def get_client() -> JQuantsClient:
 Client = Annotated[JQuantsClient, Depends(get_client)]
 
 
-def _meta() -> Meta:
-    return Meta(request_id=str(uuid.uuid4()), generated_at=now_jst())
+def _meta(client: JQuantsClient | None = None) -> Meta:
+    """client 为 None 时不带日历字段（保持 null，不阻塞）。"""
+    is_trading = None
+    if client is not None:
+        try:
+            is_trading = client.calendar.is_trading_day_today()
+        except Exception as exc:  # noqa: BLE001 - 日历绝不阻塞主流程
+            logger.warning("日历查询失败，is_trading_day_today 置 null: %s", exc)
+    return Meta(
+        request_id=str(uuid.uuid4()),
+        generated_at=now_jst(),
+        today_jst=today_jst(),
+        is_trading_day_today=is_trading,
+    )
 
 
 def _f(value: Decimal | None) -> float | None:
@@ -312,8 +354,52 @@ def create_app() -> FastAPI:
     @app.get("/v1/health", response_model=HealthResponse, summary="健康检查")
     def health(client: Client, _: Auth) -> HealthResponse:
         return HealthResponse(
-            meta=_meta(),
+            meta=_meta(client),
             data=HealthData(ok=True, jquants_reachable=client.reachable()),
+        )
+
+    @app.get("/v1/calendar", response_model=CalendarResponse, summary="交易日历")
+    def calendar(
+        client: Client,
+        _: Auth,
+        from_: Annotated[date, Query(alias="from", description="起始日期（含）")],
+        to: Annotated[date, Query(description="结束日期（含）")],
+    ) -> CalendarResponse:
+        """只读透传。逐日返回，超出源覆盖范围的日期显式标 not_covered，不猜测。"""
+        if from_ > to:
+            raise HTTPException(400, {
+                "code": "INVALID_REQUEST",
+                "message": f"from({from_}) 晚于 to({to})",
+                "hint": "确认日期顺序",
+            })
+        if (to - from_).days > 400:
+            raise HTTPException(400, {
+                "code": "INVALID_REQUEST",
+                "message": "查询区间超过 400 天",
+                "hint": "缩小区间后重试",
+            })
+
+        rows = client.calendar.range(from_, to)
+        coverage = client.calendar.coverage()
+
+        if rows is None:
+            # 日历整体不可用：逐日返回 not_covered，不阻塞、不猜
+            span = (to - from_).days + 1
+            rows = [
+                {
+                    "date": from_ + timedelta(days=i),
+                    "holiday_division": None,
+                    "is_trading_day": None,
+                    "not_covered": True,
+                }
+                for i in range(span)
+            ]
+
+        return CalendarResponse(
+            meta=_meta(client),
+            data=[CalendarDay(**row) for row in rows],
+            coverage_from=coverage[0] if coverage else None,
+            coverage_to=coverage[1] if coverage else None,
         )
 
     @app.get("/v1/quotes", response_model=QuotesResponse, summary="批量取价")
@@ -336,7 +422,7 @@ def create_app() -> FastAPI:
             })
         outcomes = resolve_codes(client, items)
         return QuotesResponse(
-            meta=_meta(),
+            meta=_meta(client),
             data=[
                 Quote(
                     code=c,
@@ -412,7 +498,7 @@ def create_app() -> FastAPI:
 
         totals = pnl.aggregate(successes, had_error)
         return PnlResponse(
-            meta=_meta(),
+            meta=_meta(client),
             data=rows,
             totals=Totals(
                 cost_total=float(totals["cost_total"]),

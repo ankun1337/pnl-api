@@ -27,15 +27,19 @@ from pnlapi.clock import today_jst
 class _Entry:
     value: Any
     stored_day: date      # 写入时的 JST 日期
-    as_of: date | None    # 该条目所承载数据的业务日期；None 表示不适用
+    as_of: date | None    # 该条目所承载数据的业务日期
+    pinned: bool          # True=钉到日切；False=走 TTL
     stored_at: float      # 单调时钟，用于 TTL
 
 
 class DayCache:
-    """线程安全。两档失效策略见模块 docstring。
+    """线程安全。失效策略：
 
-    `as_of=None`（如主数据）视同"当日数据"，缓存至日切——主数据没有
-    "尚未发布"的概念，不需要 TTL。
+    - `as_of == 今天` → 钉到 JST 日切（EOD 当天不再变）
+    - `as_of < 今天` → TTL（收盘价发布后能自然取到新价）
+    - `as_of is None` → **TTL**。这表示"没取到任何可用数据"，
+      是**可恢复状态**，不得钉住（检查点 2 后续批复第 2 条）
+    - `pin=True` 显式钉住 → 用于主数据这类无 as_of 语义、且确实取到了数据的条目
     """
 
     def __init__(self, stale_ttl_s: float = 600.0,
@@ -48,9 +52,12 @@ class DayCache:
     def _is_live(self, entry: _Entry, today: date, now: float) -> bool:
         if entry.stored_day != today:
             return False                      # 跨日一律失效
-        if entry.as_of is not None and entry.as_of < today:
-            return now - entry.stored_at < self._stale_ttl_s   # 旧数据：TTL
-        return True                           # 当日数据：钉到日切
+        if entry.pinned:
+            return True                       # 显式钉住（主数据）
+        if entry.as_of is not None and entry.as_of == today:
+            return True                       # 当日数据：钉到日切
+        # 旧数据，或 as_of=None（无可用数据，可恢复状态）：走 TTL
+        return now - entry.stored_at < self._stale_ttl_s
 
     def get(self, key: str) -> Any | None:
         today, now = today_jst(), self._monotonic()
@@ -63,12 +70,19 @@ class DayCache:
                 return None
             return entry.value
 
-    def put(self, key: str, value: Any, *, as_of: date | None = None) -> None:
+    def put(self, key: str, value: Any, *, as_of: date | None = None,
+            pin: bool = False) -> None:
+        """写入条目。
+
+        `as_of`：该条目数据的业务日期。为 None 表示无可用数据 → 走 TTL。
+        `pin`：显式钉到日切，供主数据这类无 as_of 语义的条目使用。
+        """
         with self._lock:
             self._data[key] = _Entry(
                 value=value,
                 stored_day=today_jst(),
                 as_of=as_of,
+                pinned=pin,
                 stored_at=self._monotonic(),
             )
 
