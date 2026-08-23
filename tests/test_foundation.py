@@ -73,19 +73,19 @@ def test_settings_defaults():
 
 def test_cache_hit_same_day():
     c = cache_module.DayCache()
-    c.put("7203", {"close": 3132}, as_of=today_jst())
-    assert c.get("7203") == {"close": 3132}
+    c.put("1001", {"close": 1010}, as_of=today_jst())
+    assert c.get("1001") == {"close": 1010}
     assert len(c) == 1
-    assert c.get("9432") is None
+    assert c.get("1003") is None
 
 
 def test_cache_expires_on_jst_date_rollover(monkeypatch):
     c = cache_module.DayCache()
-    c.put("7203", "old", as_of=today_jst())
+    c.put("1001", "old", as_of=today_jst())
     # 模拟日期翻转
     tomorrow = today_jst() + timedelta(days=1)
     monkeypatch.setattr(cache_module, "today_jst", lambda: tomorrow)
-    assert c.get("7203") is None
+    assert c.get("1001") is None
     assert len(c) == 0
 
 
@@ -121,14 +121,14 @@ def test_stale_entry_expires_after_ttl():
     c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
     yesterday = today_jst() - timedelta(days=1)
 
-    c.put("7203", "昨日行情", as_of=yesterday)
-    assert c.get("7203") == "昨日行情"          # 刚写入，命中
+    c.put("1001", "昨日行情", as_of=yesterday)
+    assert c.get("1001") == "昨日行情"          # 刚写入，命中
 
     clock.advance(599)
-    assert c.get("7203") == "昨日行情"          # TTL 内，仍命中（挡掉重复轮询）
+    assert c.get("1001") == "昨日行情"          # TTL 内，仍命中（挡掉重复轮询）
 
     clock.advance(2)                            # 累计 601 秒
-    assert c.get("7203") is None                # 过期，将重新取价
+    assert c.get("1001") is None                # 过期，将重新取价
     assert len(c) == 0
 
 
@@ -137,12 +137,12 @@ def test_today_entry_pinned_until_date_rollover():
     clock = FakeClock()
     c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
 
-    c.put("7203", "当日行情", as_of=today_jst())
+    c.put("1001", "当日行情", as_of=today_jst())
     clock.advance(10_000)                       # 远超 TTL
-    assert c.get("7203") == "当日行情"          # 仍钉住
+    assert c.get("1001") == "当日行情"          # 仍钉住
 
     clock.advance(50_000)
-    assert c.get("7203") == "当日行情"
+    assert c.get("1001") == "当日行情"
 
 
 def test_stale_then_refreshed_to_today_becomes_pinned():
@@ -151,13 +151,13 @@ def test_stale_then_refreshed_to_today_becomes_pinned():
     c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
     yesterday = today_jst() - timedelta(days=1)
 
-    c.put("7203", "发布前", as_of=yesterday)
+    c.put("1001", "发布前", as_of=yesterday)
     clock.advance(601)
-    assert c.get("7203") is None                # 过期，触发重取
+    assert c.get("1001") is None                # 过期，触发重取
 
-    c.put("7203", "发布后", as_of=today_jst())  # 取到当日数据
+    c.put("1001", "发布后", as_of=today_jst())  # 取到当日数据
     clock.advance(10_000)
-    assert c.get("7203") == "发布后"            # 此后钉住，不再重复请求
+    assert c.get("1001") == "发布后"            # 此后钉住，不再重复请求
 
 
 def test_as_of_none_uses_ttl_not_pinned():
@@ -168,19 +168,19 @@ def test_as_of_none_uses_ttl_not_pinned():
     clock = FakeClock()
     c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
 
-    c.put("7203", [], as_of=None)               # 窗口内无 NORMAL 行
-    assert c.get("7203") == []                  # TTL 内命中，挡住重复轮询
+    c.put("1001", [], as_of=None)               # 窗口内无 NORMAL 行
+    assert c.get("1001") == []                  # TTL 内命中，挡住重复轮询
     clock.advance(601)
-    assert c.get("7203") is None                # 过期，可重新取价恢复
+    assert c.get("1001") is None                # 过期，可重新取价恢复
 
 
 def test_explicit_pin_survives_ttl():
     """pin=True 显式钉到日切——供主数据这类确实取到了数据的条目使用。"""
     clock = FakeClock()
     c = cache_module.DayCache(stale_ttl_s=600, monotonic=clock)
-    c.put("master", {"7203": "トヨタ"}, pin=True)
+    c.put("master", {"1001": "架空重工業"}, pin=True)
     clock.advance(10_000)
-    assert c.get("master") == {"7203": "トヨタ"}
+    assert c.get("master") == {"1001": "架空重工業"}
 
 
 def test_pinned_still_expires_on_rollover(monkeypatch):
@@ -197,8 +197,8 @@ def test_ttl_zero_means_stale_never_cached():
     """CACHE_STALE_TTL_S=0 时旧数据不缓存（每次都重取）。"""
     clock = FakeClock()
     c = cache_module.DayCache(stale_ttl_s=0, monotonic=clock)
-    c.put("7203", "旧", as_of=today_jst() - timedelta(days=1))
-    assert c.get("7203") is None
+    c.put("1001", "旧", as_of=today_jst() - timedelta(days=1))
+    assert c.get("1001") is None
 
 
 # --- logsafe（T7 的核心断言）-----------------------------------------------

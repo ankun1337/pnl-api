@@ -35,8 +35,8 @@ MASTER_ROWS = fixture("master_names")
 NO_TRADE_ROWS = [r for r in fixture("bars_no_trade_sample") if r["O"] is None]
 
 # 用真实 fixture 的代码构造受控宇宙
-CODE_OK = "7203"           # 调用方写法（4 位）
-VENDOR_OK = "72030"
+CODE_OK = "1001"           # 调用方写法（4 位）
+VENDOR_OK = "10010"
 CODE_HALTED = NO_TRADE_ROWS[0]["Code"]   # 全窗口无成交的代码
 
 
@@ -48,8 +48,8 @@ def build_client(*, master_fails: bool = False) -> JQuantsClient:
                 return httpx.Response(500, text="master down")
             rows = list(MASTER_ROWS)
             # 确保受控代码在主数据中
-            rows.append({"Code": VENDOR_OK, "CoName": "トヨタ自動車"})
-            rows.append({"Code": CODE_HALTED, "CoName": "停牌サンプル"})
+            rows.append({"Code": VENDOR_OK, "CoName": "架空重工業"})
+            rows.append({"Code": CODE_HALTED, "CoName": "架空停牌銘柄"})
             return httpx.Response(200, json={"data": rows})
         if path == "/v2/equities/bars/daily":
             code = request.url.params.get("code")
@@ -284,7 +284,7 @@ def test_t9_dedup_only_at_fetch_layer():
 
     def counting_handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v2/equities/master":
-            rows = list(MASTER_ROWS) + [{"Code": VENDOR_OK, "CoName": "トヨタ自動車"}]
+            rows = list(MASTER_ROWS) + [{"Code": VENDOR_OK, "CoName": "架空重工業"}]
             return httpx.Response(200, json={"data": rows})
         calls.append(request.url.params.get("code"))
         return httpx.Response(200, json={"data": NORMAL_ROWS})

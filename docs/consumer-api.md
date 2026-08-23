@@ -1,5 +1,10 @@
 # 消费方接入文档
 
+> **本文档中的所有行情数值、证券代码与公司名均为虚构示例。**
+> 字段结构、类型与 null 形态取自真实 J-Quants V2 响应，可据此编码；
+> 但数值本身不代表任何真实市场数据——数据供应商条款不允许公开分发其数据。
+> 接入后请以你自己请求到的真实响应为准。
+
 **股票盈亏 API** 的接口合同。你只需要这一份文档就能完成接入，不需要读源码。
 
 ---
@@ -79,7 +84,7 @@ HEADERS = {"X-API-Key": ENV["API_KEY_LOCAL"]}
 ```json
 {
   "request_id": "fd67f049-7b21-4521-89a6-cef38b707283",
-  "generated_at": "2026-08-23T16:36:23.285772+09:00",
+  "generated_at": "2026-08-08T16:36:23.285772+09:00",
   "source": "JQUANTS_V2",
   "latency_class": "END_OF_DAY",
   "fees_included": false
@@ -142,17 +147,17 @@ print(r.json()["data"])
 |---|---|---|
 | `codes` | string | 必填。逗号分隔，**最多 100 个** |
 
-**代码写法**：四位习惯代码（`7203`）与五位供应商代码（`72030`）都可以，
+**代码写法**：四位习惯代码（`1001`）与五位供应商代码（`10010`）都可以，
 响应中的 `code` 会**原样回显你传入的写法**。
 
 ```bash
 curl -s -H "X-API-Key: $API_KEY" \
-  "http://127.0.0.1:8642/v1/quotes?codes=7203,6758,00000"
+  "http://127.0.0.1:8642/v1/quotes?codes=1001,1002,00000"
 ```
 
 ```python
 r = httpx.get(f"{BASE_URL}/v1/quotes",
-              params={"codes": "7203,6758"}, headers=HEADERS, timeout=60)
+              params={"codes": "1001,1002"}, headers=HEADERS, timeout=60)
 for q in r.json()["data"]:
     if q["error"]:
         print(f"{q['code']}: {q['error']['code']}")
@@ -167,19 +172,19 @@ for q in r.json()["data"]:
   "meta": { "...": "见第 3 节" },
   "data": [
     {
-      "code": "7203",
-      "name_ja": "トヨタ自動車",
-      "latest_close": 3132.0,
-      "as_of": "2026-08-21",
-      "pct_change_today": 0.021526418786692758,
+      "code": "1001",
+      "name_ja": "架空重工業",
+      "latest_close": 1010.0,
+      "as_of": "2026-08-06",
+      "pct_change_today": 0.00990,
       "error": null
     },
     {
-      "code": "6758",
-      "name_ja": "ソニーグループ",
-      "latest_close": 3785.0,
-      "as_of": "2026-08-21",
-      "pct_change_today": 0.0021180831347630395,
+      "code": "1002",
+      "name_ja": "架空電機",
+      "latest_close": 1250.0,
+      "as_of": "2026-08-06",
+      "pct_change_today": 0.00402,
       "error": null
     },
     {
@@ -202,7 +207,7 @@ for q in r.json()["data"]:
 |---|---|
 | `latest_close` | 最新可得收盘价（**原始价**，即市场真实成交价） |
 | `as_of` | 该价格所属交易日。**务必核对** |
-| `pct_change_today` | 较前一交易日的涨跌幅，**小数**（`0.0215` = +2.15%）。用复权价计算，跨除权日不会出假值 |
+| `pct_change_today` | 较前一交易日的涨跌幅，**小数**（`0.0215` = +0.99%）。用复权价计算，跨除权日不会出假值 |
 | `error` | 成功时为 `null`；失败时见第 5 节 |
 
 ---
@@ -214,8 +219,8 @@ for q in r.json()["data"]:
 ```json
 {
   "positions": [
-    {"code": "7203", "shares": 300, "cost_price": 2800},
-    {"code": "6758", "shares": 200, "cost_total": 700000}
+    {"code": "1001", "shares": 300, "cost_price": 800},
+    {"code": "1002", "shares": 200, "cost_total": 200000}
   ]
 }
 ```
@@ -241,15 +246,15 @@ for q in r.json()["data"]:
 
 ```bash
 curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"positions":[{"code":"7203","shares":300,"cost_price":2800}]}' \
+  -d '{"positions":[{"code":"1001","shares":300,"cost_price":800}]}' \
   "http://127.0.0.1:8642/v1/pnl"
 ```
 
 ```python
 r = httpx.post(f"{BASE_URL}/v1/pnl", headers=HEADERS, timeout=60, json={
     "positions": [
-        {"code": "7203", "shares": 300, "cost_price": 2800},
-        {"code": "6758", "shares": 200, "cost_total": 700000},
+        {"code": "1001", "shares": 300, "cost_price": 800},
+        {"code": "1002", "shares": 200, "cost_total": 200000},
     ]
 })
 body = r.json()
@@ -267,36 +272,36 @@ print("合计", body["totals"]["profit"], "partial:", body["totals"]["partial"])
 {
   "meta": {
     "request_id": "fd67f049-7b21-4521-89a6-cef38b707283",
-    "generated_at": "2026-08-23T16:36:23.285772+09:00",
+    "generated_at": "2026-08-08T16:36:23.285772+09:00",
     "source": "JQUANTS_V2",
     "latency_class": "END_OF_DAY",
     "fees_included": false
   },
   "data": [
     {
-      "code": "7203",
-      "name_ja": "トヨタ自動車",
+      "code": "1001",
+      "name_ja": "架空重工業",
       "shares": 300,
-      "cost_total": 840000.0,
-      "latest_close": 3132.0,
-      "as_of": "2026-08-21",
-      "market_value": 939600.0,
-      "profit": 99600.0,
-      "profit_rate": 0.11857142857142858,
-      "pct_change_today": 0.021526418786692758,
+      "cost_total": 240000.0,
+      "latest_close": 1010.0,
+      "as_of": "2026-08-06",
+      "market_value": 303000.0,
+      "profit": 63000.0,
+      "profit_rate": 0.26250,
+      "pct_change_today": 0.00990,
       "error": null
     },
     {
-      "code": "6758",
-      "name_ja": "ソニーグループ",
+      "code": "1002",
+      "name_ja": "架空電機",
       "shares": 200,
-      "cost_total": 700000.0,
-      "latest_close": 3785.0,
-      "as_of": "2026-08-21",
-      "market_value": 757000.0,
-      "profit": 57000.0,
-      "profit_rate": 0.08142857142857143,
-      "pct_change_today": 0.0021180831347630395,
+      "cost_total": 200000.0,
+      "latest_close": 1250.0,
+      "as_of": "2026-08-06",
+      "market_value": 250000.0,
+      "profit": 50000.0,
+      "profit_rate": 0.25000,
+      "pct_change_today": 0.00402,
       "error": null
     },
     {
@@ -318,10 +323,10 @@ print("合计", body["totals"]["profit"], "partial:", body["totals"]["partial"])
     }
   ],
   "totals": {
-    "cost_total": 1540000.0,
-    "market_value": 1696600.0,
-    "profit": 156600.0,
-    "profit_rate": 0.10168831168831169,
+    "cost_total": 440000.0,
+    "market_value": 553000.0,
+    "profit": 113000.0,
+    "profit_rate": 0.25682,
     "partial": true
   }
 }
@@ -368,7 +373,7 @@ profit_rate  = profit / cost_total
 
 ```bash
 curl -s -H "X-API-Key: $API_KEY" \
-  "http://127.0.0.1:8642/v1/calendar?from=2026-08-21&to=2026-08-25"
+  "http://127.0.0.1:8642/v1/calendar?from=2026-08-06&to=2026-08-11"
 ```
 
 真实响应：
@@ -377,14 +382,14 @@ curl -s -H "X-API-Key: $API_KEY" \
 {
   "meta": { "...": "见第 3 节" },
   "data": [
-    {"date": "2026-08-21", "holiday_division": "1", "is_trading_day": true,  "not_covered": false},
-    {"date": "2026-08-22", "holiday_division": "0", "is_trading_day": false, "not_covered": false},
-    {"date": "2026-08-23", "holiday_division": "0", "is_trading_day": false, "not_covered": false},
-    {"date": "2026-08-24", "holiday_division": "1", "is_trading_day": true,  "not_covered": false},
-    {"date": "2026-08-25", "holiday_division": "1", "is_trading_day": true,  "not_covered": false}
+    {"date": "2026-08-06", "holiday_division": "1", "is_trading_day": true,  "not_covered": false},
+    {"date": "2026-08-07", "holiday_division": "0", "is_trading_day": false, "not_covered": false},
+    {"date": "2026-08-08", "holiday_division": "0", "is_trading_day": false, "not_covered": false},
+    {"date": "2026-08-10", "holiday_division": "1", "is_trading_day": true,  "not_covered": false},
+    {"date": "2026-08-11", "holiday_division": "1", "is_trading_day": true,  "not_covered": false}
   ],
-  "coverage_from": "2026-07-24",
-  "coverage_to": "2026-10-07"
+  "coverage_from": "2026-07-10",
+  "coverage_to": "2026-09-20"
 }
 ```
 
@@ -628,7 +633,7 @@ if body["totals"]["partial"]:
 ## 8. 延迟与超时（实测数据）
 
 服务向上游串行取数并遵守限流，**请求耗时与持仓只数线性相关**。
-下面是本机实测值（2026-08-23，Light 档）：
+下面是本机实测值（2026-08-08，Light 档）：
 
 | 场景 | 实测耗时 | 构成 |
 |---|---|---|

@@ -98,10 +98,10 @@ def test_range_marks_not_covered():
 
 def test_coverage_reports_actual_range():
     svc = make_service([
-        {"Date": "2026-08-20", "HolDiv": "1"},
-        {"Date": "2026-08-24", "HolDiv": "1"},
+        {"Date": "2026-08-04", "HolDiv": "1"},
+        {"Date": "2026-08-10", "HolDiv": "1"},
     ])
-    assert svc.coverage() == (date(2026, 8, 20), date(2026, 8, 24))
+    assert svc.coverage() == (date(2026, 8, 4), date(2026, 8, 10))
 
 
 # --- 缓存：日切失效 --------------------------------------------------------
@@ -183,12 +183,12 @@ def build_client(calendar_rows=None, *, calendar_fails: bool = False) -> JQuants
             return httpx.Response(200, json={"data": rows})
         if path == "/v2/equities/master":
             return httpx.Response(200, json={"data": [
-                {"Code": "72030", "CoName": "トヨタ自動車"}
+                {"Code": "10010", "CoName": "架空重工業"}
             ]})
         if path == "/v2/equities/bars/daily":
             return httpx.Response(200, json={"data": [{
-                "Date": "2026-08-21", "Code": "72030", "C": 3132.0,
-                "AdjC": 3132.0, "Vo": 25924500.0,
+                "Date": "2026-08-06", "Code": "10010", "C": 1010.0,
+                "AdjC": 1010.0, "Vo": 150000.0,
             }]})
         return httpx.Response(404)
 
@@ -204,7 +204,7 @@ def make_tc(jq: JQuantsClient) -> TestClient:
 
 def test_meta_carries_calendar_fields():
     tc = make_tc(build_client())
-    for path in ("/v1/health", "/v1/quotes?codes=7203"):
+    for path in ("/v1/health", "/v1/quotes?codes=1001"):
         meta = tc.get(path, headers=AUTH).json()["meta"]
         assert meta["today_jst"] == TODAY.isoformat()
         assert meta["is_trading_day_today"] is True
@@ -213,10 +213,10 @@ def test_meta_carries_calendar_fields():
 def test_meta_calendar_null_when_unavailable():
     """日历不可用 → meta 字段为 null，但请求照常成功（绝不阻塞）。"""
     tc = make_tc(build_client(calendar_fails=True))
-    body = tc.get("/v1/quotes?codes=7203", headers=AUTH).json()
+    body = tc.get("/v1/quotes?codes=1001", headers=AUTH).json()
     assert body["meta"]["is_trading_day_today"] is None
     assert body["meta"]["today_jst"] == TODAY.isoformat()
-    assert body["data"][0]["latest_close"] == 3132.0   # 盈亏路径不受影响
+    assert body["data"][0]["latest_close"] == 1010.0   # 盈亏路径不受影响
 
 
 def test_calendar_endpoint():

@@ -80,7 +80,7 @@ def test_classify_from_real_fixtures():
     ],
 )
 def test_classify_three_states(close, adj, vol, expected):
-    bar = Bar(date(2026, 8, 21), "72030", close, adj, vol)
+    bar = Bar(date(2026, 8, 6), "10010", close, adj, vol)
     assert classify(bar) is expected
 
 
@@ -100,7 +100,7 @@ def test_t2_latest_is_last_normal_row():
 def test_t2_skips_trailing_no_trade():
     """尾部是无成交行时，回退到之前最近的 NORMAL 行，as_of 随之回退。"""
     normal = [parse_bar(r) for r in load("bars_normal_7203")][-3:]
-    stale = Bar(date(2026, 8, 24), "72030", None, None, None)  # 尾部停牌
+    stale = Bar(date(2026, 8, 10), "10010", None, None, None)  # 尾部停牌
     price, _ = pick_price(normal + [stale])
     assert price is not None
     assert price.as_of == normal[-1].trade_date   # 不是 08-24
@@ -135,18 +135,18 @@ def test_t3_split_day_uses_adjusted_columns():
     数值取自真实拆股事件形态（NTT 2023-06-29，AdjFactor=0.04）：
     源提供的复权价已把除权前价格按因子缩放，故复权价相除得真实涨跌。
     """
-    before = Bar(date(2023, 6, 28), "94320", Decimal("4405"), Decimal("176.2"), Decimal(1))
-    after = Bar(date(2023, 6, 29), "94320", Decimal("171.2"), Decimal("171.2"), Decimal(1))
+    before = Bar(date(2025, 6, 28), "10030", Decimal("2500"), Decimal("100.0"), Decimal(1))
+    after = Bar(date(2025, 6, 29), "10030", Decimal("97.5"), Decimal("97.5"), Decimal(1))
     price, _ = pick_price([before, after])
 
     assert price is not None
     # 估值用原始价：拿到的是当日真实成交价
-    assert price.latest_close == Decimal("171.2")
+    assert price.latest_close == Decimal("97.5")
     # 当日涨跌用复权价：-2.8%，而不是原始价相除的 -96%
-    assert price.pct_change_today == Decimal("171.2") / Decimal("176.2") - 1
+    assert price.pct_change_today == Decimal("97.5") / Decimal("100.0") - 1
     assert Decimal("-0.03") < price.pct_change_today < Decimal("-0.02")
 
-    naive = Decimal("171.2") / Decimal("4405") - 1   # 若误用原始价
+    naive = Decimal("97.5") / Decimal("2500") - 1   # 若误用原始价
     assert naive < Decimal("-0.96")
     assert price.pct_change_today != naive
 
@@ -156,27 +156,27 @@ def test_t3_split_day_uses_adjusted_columns():
 
 def test_t8_anomalous_row_never_becomes_latest():
     """部分 null 的异常行必须被跳过，latest 回退到之前的 NORMAL 行。"""
-    good = Bar(date(2026, 8, 20), "72030", Decimal("3066"), Decimal("3066"), Decimal(1))
-    anomalous = Bar(date(2026, 8, 21), "72030", Decimal("3132"), None, Decimal(1))
+    good = Bar(date(2026, 8, 5), "10010", Decimal("1000"), Decimal("1000"), Decimal(1))
+    anomalous = Bar(date(2026, 8, 6), "10010", Decimal("1010"), None, Decimal(1))
 
     price, anomalies = pick_price([good, anomalous])
 
     assert price is not None
-    assert price.as_of == date(2026, 8, 20)          # 不是 08-21
-    assert price.latest_close == Decimal("3066")
+    assert price.as_of == date(2026, 8, 5)          # 不是 08-21
+    assert price.latest_close == Decimal("1000")
     assert len(anomalies) == 1                        # 供调用方 WARN
-    assert anomalies[0].trade_date == date(2026, 8, 21)
+    assert anomalies[0].trade_date == date(2026, 8, 6)
 
 
 def test_t8_anomalous_row_not_used_as_prev_either():
     """异常行也不能充当 prev——否则 pct_change 分母是残缺数据。"""
-    older = Bar(date(2026, 8, 19), "72030", Decimal("2941"), Decimal("2941"), Decimal(1))
-    anomalous = Bar(date(2026, 8, 20), "72030", None, Decimal("3066"), Decimal(1))
-    latest = Bar(date(2026, 8, 21), "72030", Decimal("3132"), Decimal("3132"), Decimal(1))
+    older = Bar(date(2026, 8, 4), "10010", Decimal("990"), Decimal("990"), Decimal(1))
+    anomalous = Bar(date(2026, 8, 5), "10010", None, Decimal("1000"), Decimal(1))
+    latest = Bar(date(2026, 8, 6), "10010", Decimal("1010"), Decimal("1010"), Decimal(1))
 
     price, anomalies = pick_price([older, anomalous, latest])
 
-    assert price.as_of == date(2026, 8, 21)
+    assert price.as_of == date(2026, 8, 6)
     # 分母应是 08-19 的 2941，而不是异常行的 3066
-    assert price.pct_change_today == Decimal("3132") / Decimal("2941") - 1
+    assert price.pct_change_today == Decimal("1010") / Decimal("990") - 1
     assert len(anomalies) == 1
