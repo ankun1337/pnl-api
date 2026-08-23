@@ -1,0 +1,13 @@
+{
+ "endpoint": "/v2/equities/bars/daily",
+ "params": {
+  "code": "00000",
+  "from": "2026-07-09",
+  "to": "2026-08-23"
+ },
+ "http_status": 200,
+ "fetched_at_jst": "2026-08-23T16:18:00.539653+09:00",
+ "total_rows": 0,
+ "rows_kept": 0,
+ "note": "乱码代码的响应形态"
+}

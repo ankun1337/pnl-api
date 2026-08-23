@@ -1,0 +1,9 @@
+{
+ "endpoint": "/v2/equities/master",
+ "params": {},
+ "http_status": 200,
+ "fetched_at_jst": "2026-08-23T16:17:58.694454+09:00",
+ "total_rows": 4444,
+ "rows_kept": 30,
+ "note": "code->name 映射来源；裁剪保留 30 行"
+}

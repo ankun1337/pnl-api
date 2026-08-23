@@ -1,0 +1,13 @@
+{
+ "endpoint": "/v2/equities/bars/daily",
+ "params": {
+  "code": "7203",
+  "from": "2026-07-09",
+  "to": "2026-08-23"
+ },
+ "http_status": 200,
+ "fetched_at_jst": "2026-08-23T16:17:48.486281+09:00",
+ "total_rows": 30,
+ "rows_kept": 30,
+ "note": "正常股票；最后一行的日期即'最新可得收盘'的实测样本"
+}

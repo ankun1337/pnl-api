@@ -1,0 +1,12 @@
+{
+ "endpoint": "/v2/equities/bars/daily",
+ "params": {
+  "code": "7203",
+  "date": "2026-08-23"
+ },
+ "http_status": 200,
+ "fetched_at_jst": "2026-08-23T16:17:55.817288+09:00",
+ "total_rows": 0,
+ "rows_kept": 0,
+ "note": "运行时刻 2026-08-23T16:17:55.816449+09:00；今天是否交易日、是否已过 16:30 JST 决定本样本代表'未发布'还是'非交易日'，判读见 fixture-notes"
+}
