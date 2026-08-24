@@ -11,3 +11,4 @@ __pycache__/
 # 工具产物
 .DS_Store
 .gstack/
+docs/watch-*.log
